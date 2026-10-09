@@ -31,6 +31,8 @@ jobs:
           node-version: 22
       - name: Check safe backend error hints
         run: node scripts/test-codex-errors.mjs
+      - name: Check subscription usage
+        run: node scripts/test-plan-usage.mjs
       - name: Build, unit test, lint
         run: ./gradlew assembleDebug testDebugUnitTest lintDebug --stacktrace
       - name: Check native libraries

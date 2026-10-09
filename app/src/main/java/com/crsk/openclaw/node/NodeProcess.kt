@@ -115,6 +115,21 @@ class NodeProcess @Inject constructor(
         return true
     }
 
+    private fun installCodexPlanUsage(): Boolean = runCatching {
+        val root = File(filesDir, "openclaw/node_modules/openclaw")
+        if (JSONObject(File(root, "package.json").readText()).optString("version") != "2026.5.12") return false
+        val module = File(root, "dist/provider-usage-DQntMfSF.js")
+        val before = module.readText()
+        val snippet = context.assets.open("codex-plan-usage.js").bufferedReader().use { it.readText() }
+        val after = CodexUsagePatch.apply(before, snippet) ?: return false
+        if (after != before) {
+            val temp = File(module.parentFile, module.name + ".usage-tmp")
+            temp.writeText(after)
+            if (!temp.renameTo(module)) { temp.delete(); return false }
+        }
+        true
+    }.getOrDefault(false)
+
     private fun repairPinnedCodexResponseMetadata(): Boolean {
         val packageRoot = File(filesDir, "openclaw/node_modules/openclaw")
         val pkg = File(packageRoot, "package.json")
@@ -161,6 +176,7 @@ class NodeProcess @Inject constructor(
         require(openclawBin.exists()) { "openclaw entry point not found: $openclawBin" }
 
         if (preferences.apiProvider.value == "openai-codex") {
+            Log.i("NodeProcess", "Codex plan usage installed: " + installCodexPlanUsage())
             check(repairPinnedCodexResponseMetadata()) {
                 "Codex OAuth transport module is incompatible; cannot start until fixed"
             }

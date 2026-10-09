@@ -46,6 +46,8 @@ GPT-5.5 is the starting choice. GPT-6.1 Sol, GPT-6 Astra, GPT-6 Sol and GPT-6 Lu
 are also listed; availability depends on your account. The five were tested with
 real replies on a OnePlus 7 Pro. See [what changed and what was tested](docs/FORK.md).
 
+**Status → Usage** shows your remaining ChatGPT limits, reset times and credits.
+
 For shell actions, follow [Shizuku's setup guide](https://shizuku.rikka.app/guide/setup/)
 and allow 4AIs access. Shizuku needs to be started again after a phone reboot.
 

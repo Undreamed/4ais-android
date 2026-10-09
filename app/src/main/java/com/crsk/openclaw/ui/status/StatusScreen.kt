@@ -63,6 +63,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
+import androidx.compose.material3.LinearProgressIndicator
+import java.text.DateFormat
+import java.text.NumberFormat
+import java.util.Date
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
@@ -94,6 +100,7 @@ fun StatusScreen(
 ) {
     val connections by viewModel.connections.collectAsStateWithLifecycle()
     val codexSelected by viewModel.codexSelected.collectAsStateWithLifecycle()
+    val usage by viewModel.usage.collectAsStateWithLifecycle()
     val featuredToolkits by viewModel.featuredToolkits.collectAsStateWithLifecycle()
     val pendingRedirect by viewModel.pendingRedirect.collectAsStateWithLifecycle()
     val connectError by viewModel.connectError.collectAsStateWithLifecycle()
@@ -119,12 +126,23 @@ fun StatusScreen(
     // Every time the Status screen comes back to foreground (incl. returning from OAuth)
     // refresh connection statuses + restart gateway if anything went ACTIVE.
     val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner, codexSelected, connections.gateway) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            do {
+                viewModel.refreshUsage()
+                delay(60_000)
+            } while (codexSelected && connections.gateway)
+        }
+    }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) viewModel.onResumeFromOAuth()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.stopUsageRefresh()
+        }
     }
 
     val capabilities = listOf(
@@ -183,7 +201,7 @@ fun StatusScreen(
                     onBrowseAll = onOpenIntegrations,
                     onEnable = onEnable,
                 )
-                UsageCard(codexSelected)
+                UsageCard(codexSelected, usage, viewModel::refreshUsage)
             }
         }
     }
@@ -450,38 +468,86 @@ private fun ConnectionBubble(cap: Capability, onEnable: (CapabilityId) -> Unit) 
 }
 
 @Composable
-private fun UsageCard(codexSelected: Boolean) {
+private fun UsageCard(codexSelected: Boolean, state: UsageUiState, onRefresh: () -> Unit) {
     GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 22.dp, contentPadding = 20.dp) {
         Column {
-            Text(
-                text = "Usage",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Usage", style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface)
+                if (codexSelected) {
+                    IconButton(onClick = onRefresh, enabled = !state.loading) {
+                        if (state.loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Filled.Refresh, contentDescription = "Refresh usage", tint = AccentBlue)
+                    }
+                }
+            }
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
                         .size(10.dp)
                         .clip(CircleShape)
-                        .background(Success),
+                        .background(if (state.usage != null || !codexSelected) Success else Warning),
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    text = if (codexSelected) "Your ChatGPT plan" else "Your AI provider",
+                    text = if (codexSelected) state.usage?.plan?.let {
+                        "ChatGPT " + it.replaceFirstChar { letter -> letter.uppercase() }
+                    } ?: "Your ChatGPT plan" else "Your AI provider",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
             }
             Spacer(Modifier.height(6.dp))
-            Text(
-                text = if (codexSelected)
-                    "Your ChatGPT plan determines which models you can use and how much you can chat."
-                else
-                    "Usage and billing follow your provider’s plan.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextMuted,
-            )
+            val usage = state.usage
+            if (codexSelected && usage != null) {
+                val numbers = remember { NumberFormat.getNumberInstance().apply { maximumFractionDigits = 1 } }
+                val creditNumbers = remember { NumberFormat.getNumberInstance().apply { maximumFractionDigits = 2 } }
+                for (window in usage.windows) {
+                    Spacer(Modifier.height(16.dp))
+                    val label = when (window.label) {
+                        "Week" -> "Weekly limit"
+                        "Day" -> "Daily limit"
+                        else -> if (window.label.matches(Regex("[0-9.]+h")))
+                            window.label.removeSuffix("h") + "-hour limit" else window.label
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Text("${numbers.format(window.remainingPercent)}% left",
+                            style = MaterialTheme.typography.bodyMedium, color = Success)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    LinearProgressIndicator(progress = { (window.remainingPercent / 100).toFloat() },
+                        modifier = Modifier.fillMaxWidth(), color = if (window.remainingPercent > 10) Success else Warning)
+                    window.resetAt?.let { reset ->
+                        Text("Resets ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(reset))}",
+                            style = MaterialTheme.typography.bodySmall, color = TextMuted,
+                            modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                val credits = usage.credits
+                val creditText = when {
+                    credits?.unlimited == true -> "Credits: unlimited"
+                    credits?.balance != null -> "Credits: ${creditNumbers.format(credits.balance)} left"
+                    credits?.hasCredits == false -> "No extra credits"
+                    else -> "Credit balance unavailable"
+                }
+                Text(creditText, style = MaterialTheme.typography.bodyMedium)
+                if (usage.windows.isEmpty()) {
+                    Text("Plan limits unavailable", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+                }
+                usage.updatedAt?.let {
+                    Text("Updated ${DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it))}",
+                        style = MaterialTheme.typography.bodySmall, color = TextMuted,
+                        modifier = Modifier.padding(top = 8.dp))
+                }
+            } else {
+                Text(if (!codexSelected) "Usage and billing follow your provider’s plan."
+                    else if (state.loading) "Checking usage…" else state.message ?: "Checking usage…",
+                    style = MaterialTheme.typography.bodySmall, color = TextMuted)
+            }
         }
     }
 }

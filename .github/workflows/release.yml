@@ -28,6 +28,7 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/test-codex-errors.mjs
+      - run: node scripts/test-plan-usage.mjs
       - name: Decode private signing keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}

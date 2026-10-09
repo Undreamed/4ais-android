@@ -25,6 +25,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import com.crsk.openclaw.data.network.ws.WsRpcClient
+import org.json.JSONObject
 import javax.inject.Inject
 
 /** Which on-device capabilities are wired up. Each is shown as a logo bubble. */
@@ -47,13 +51,55 @@ data class ToolkitChip(
 @HiltViewModel
 class StatusViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
-    gatewayProcess: GatewayProcess,
+    private val gatewayProcess: GatewayProcess,
     accessibilityHolder: AccessibilityServiceHolder,
     shizukuManager: ShizukuManager,
-    preferences: AppPreferences,
+    private val preferences: AppPreferences,
     private val composio: ComposioRepository,
     private val nodeProcess: com.crsk.openclaw.node.NodeProcess,
+    private val rpc: WsRpcClient,
 ) : ViewModel() {
+
+    // Memory only: never persist account usage or retain it after a provider change.
+    private val _usage = MutableStateFlow(UsageUiState())
+    val usage: StateFlow<UsageUiState> = _usage.asStateFlow()
+    private var usageJob: Job? = null
+
+    fun refreshUsage() {
+        val running = gatewayProcess.status.value as? GatewayStatus.Running
+        val unavailable = when {
+            preferences.apiProvider.value != "openai-codex" -> "Usage and billing follow your provider’s plan."
+            !nodeProcess.hasCodexAuthProfile() -> "Sign in with ChatGPT in Settings to see your usage."
+            running == null -> "Start the gateway to see your usage."
+            else -> null
+        }
+        if (unavailable != null) {
+            usageJob?.cancel()
+            _usage.value = UsageUiState(message = unavailable)
+            return
+        }
+        if (usageJob?.isActive == true) return
+        usageJob = viewModelScope.launch {
+            _usage.value = UsageUiState(loading = true)
+            try {
+                rpc.ensureConnected(running!!.port)
+                val response = rpc.call("usage.status", JSONObject(), 15_000)
+                val snapshot = if (response.ok) response.payload?.let(PlanUsage::parse) else null
+                _usage.value = if (snapshot != null) UsageUiState(usage = snapshot)
+                    else UsageUiState(message = "Usage isn't available right now. Try again.")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // No raw server error: it may contain account or request details.
+                _usage.value = UsageUiState(message = "Couldn't load usage. Try again.")
+            }
+        }
+    }
+
+    fun stopUsageRefresh() {
+        usageJob?.cancel()
+        _usage.value = _usage.value.copy(loading = false)
+    }
 
     // Read-only local credential presence. Refresh on opening Status;
     // never show credentials or OAuth secrets in diagnostic output.

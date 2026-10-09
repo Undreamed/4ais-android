@@ -15,6 +15,12 @@ use a ChatGPT plan alongside the original bring-your-own-key providers.
   own account and plan; the app doesn't grant extra model access or remove limits.
 - **Working model switches.** You can switch between these models without
   restarting the agent.
+- **Your plan usage.** Status → Usage shows the signed-in account's remaining
+  limits, reset times and extra credits. Additional model limits and a plan
+  budget appear when the service provides them. Refresh by tapping the arrow;
+  the card also updates once a minute while open. Missing values aren't guessed.
+  This is a read-only account request; it doesn't send a chat or consume model
+  tokens. Automatic refresh stops when you leave Status or background the app.
 - **Android-friendly phone commands.** The agent runs its phone helper through
   Android's shell, so it works with Android's restrictions on executable files.
 - **A complete reset.** Settings → Reset all app data uses Android's own reset.
@@ -23,7 +29,13 @@ use a ChatGPT plan alongside the original bring-your-own-key providers.
   to be granted again. It affects 4AIs; it doesn't reset the separate Shizuku app.
 
 The embedded OpenClaw version remains pinned to `2026.5.12`. A narrow,
-version-checked workaround omits an unsupported request field on the ChatGPT
+version-checked usage mapper preserves extra model limits, plan-budget percentages
+and credit balances from its existing `usage.status` request. The original mapper
+dropped these fields and labelled credits as dollars. The account schema comes
+from [OpenAI's Codex source](https://github.com/openai/codex/tree/main/codex-rs/codex-backend-openapi-models/src/models).
+Usage stays in memory and is covered by the app's complete reset.
+
+A version-checked workaround omits an unsupported request field on the ChatGPT
 route ([upstream issue](https://github.com/openclaw/openclaw/issues/73963)). The
 normal API-key providers keep their existing transport.
 
@@ -33,6 +45,11 @@ written to that report. Temporary debugging scripts, device logs, sign-in
 backups and the private experiment's patch history aren't part of this repo.
 
 ## What has been tested
+
+The subscription card was tested with a live account on the OnePlus 7 Pro:
+remaining weekly usage, reset time, credit balance, manual refresh and recovery
+after stopping and starting the gateway. Parser checks cover missing fields,
+additional model limits and plan-budget percentages.
 
 The feature version was tested on a OnePlus 7 Pro, Android 12: real ChatGPT
 sign-in, streaming replies from all five listed models, model switches, gateway
