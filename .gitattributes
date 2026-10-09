@@ -2,6 +2,7 @@
 # where their tools require it). Prevents whole-tree CRLF churn on OS moves.
 * text=auto
 *.sh text eol=lf
+*.sha256 text eol=lf
 *.bat text eol=crlf
 *.png binary
 *.jpg binary

@@ -71,8 +71,85 @@ class NodeProcess @Inject constructor(
             environment().clear()
             environment().putAll(buildEnv(envExtras))
             directory(workDir)
-            redirectErrorStream(false)
+            redirectErrorStream(true)
         }.start()
+    }
+
+    // Credentials, prompts, response bodies, access tokens, cookie headers,
+    // and device codes are never exported through this diagnostic.
+    fun clearCodexHttpDiagnostic() {
+        File(filesDir, "codex-http-diag.json").delete()
+    }
+
+    fun readCodexHttpDiagnostic(): String {
+        val report = File(filesDir, "codex-http-diag.json")
+        if (!report.isFile) return ""
+        return runCatching {
+            val hint = org.json.JSONObject(report.readText().take(3000)).optString("hint")
+            when {
+                hint == "model_rejected" -> "This model isn't available for your account. Choose another in Settings."
+                hint == "access_rejected" -> "Your account couldn't access this model. Check your sign-in and plan."
+                hint == "missing_input" || hint.startsWith("rejected_field:") ->
+                    "The model couldn't read this request. Try again or choose another model."
+                else -> ""
+            }
+        }.getOrDefault("")
+    }
+
+    private fun installCodexHttpDiagnostics(): Boolean {
+        val lib = File(filesDir, "openclaw/node_modules/openclaw/dist/fetch-guard-B7xT8hT9.js")
+        if (!lib.isFile) return false
+        val original = lib.readText()
+        if (original.contains("CODEX_HTTP_DIAGNOSTIC_V1")) return true
+        val anchor = "\t\t\tawait captureGuardedFetchExchange({"
+        if (original.split(anchor).size != 2) return false
+        val snippet = context.assets.open("codex-http-diagnostic.js")
+            .bufferedReader().use { it.readText() }
+        val replaced = original.replace(anchor, snippet + "\n" + anchor)
+        val tmp = File(lib.parentFile, lib.name + ".diagnostic-tmp")
+        tmp.writeText(replaced)
+        if (!tmp.renameTo(lib)) {
+            tmp.delete()
+            return false
+        }
+        return true
+    }
+
+    private fun repairPinnedCodexResponseMetadata(): Boolean {
+        val packageRoot = File(filesDir, "openclaw/node_modules/openclaw")
+        val pkg = File(packageRoot, "package.json")
+        if (!pkg.isFile ||
+            org.json.JSONObject(pkg.readText()).optString("version") != "2026.5.12"
+        ) {
+            Log.e("NodeProcess", "Codex metadata fix: unsupported OpenClaw package version")
+            return false
+        }
+
+        val script = File(packageRoot, "dist/transport-policy-J3Z0qRyF.js")
+        if (!script.isFile) {
+            Log.e("NodeProcess", "Codex metadata fix: pinned transport module missing")
+            return false
+        }
+        // Disabling metadata only for the Codex OAuth backend keeps the
+        // direct OpenAI API transport behavior unchanged.
+        val old = "\t\tmetadata: {\n\t\t\topenclaw_session_id:"
+        val replacement = "\t\tmetadata: normalizeProviderId(ctx.provider) === OPENAI_CODEX_PROVIDER_ID ? void 0 : {\n\t\t\topenclaw_session_id:"
+        val before = script.readText()
+        if (before.contains(replacement)) return true
+        if (before.split(old).size != 2) {
+            Log.e("NodeProcess", "Codex metadata fix: exact source anchor mismatch")
+            return false
+        }
+        val patched = before.replace(old, replacement)
+        val temp = File(script.parentFile, script.name + ".oauth-tmp")
+        temp.writeText(patched)
+        if (!temp.renameTo(script)) {
+            temp.delete()
+            Log.e("NodeProcess", "Codex metadata fix: cannot replace installed module")
+            return false
+        }
+        Log.i("NodeProcess", "Patched pinned Codex metadata transport (#73963)")
+        return true
     }
 
     fun startGateway(
@@ -82,6 +159,14 @@ class NodeProcess @Inject constructor(
     ): Process {
         val openclawBin = resolveOpenclawEntryPoint()
         require(openclawBin.exists()) { "openclaw entry point not found: $openclawBin" }
+
+        if (preferences.apiProvider.value == "openai-codex") {
+            check(repairPinnedCodexResponseMetadata()) {
+                "Codex OAuth transport module is incompatible; cannot start until fixed"
+            }
+            Log.i("NodeProcess", "Codex guarded-fetch diagnostics installed: " +
+                installCodexHttpDiagnostics())
+        }
 
         // Rewrite the mcp.servers.shizuku-phone block to the CURRENT install paths.
         // Android changes nativeLibraryDir on every install -r, so any path baked into
@@ -110,6 +195,7 @@ class NodeProcess @Inject constructor(
             "OPENCLAW_CONFIG_PATH" to File(configDir, "config.json").absolutePath,
             "HOME" to File(filesDir, "home").absolutePath,
             "OPENCLAW_GATEWAY_TOKEN" to token,
+            "CODEX_DIAG_PATH" to File(filesDir, "codex-http-diag.json").absolutePath,
         )
 
         val proc = ProcessBuilder(
@@ -123,6 +209,54 @@ class NodeProcess @Inject constructor(
 
         gatewayProcess = proc
         return proc
+    }
+
+    /**
+     * Status indicator only: do not print the auth-profile JSON or account name.
+     * Legacy OpenClaw stores it under the main agent credentials directory.
+     */
+    fun hasCodexAuthProfile(): Boolean {
+        val candidates = listOf(
+            File(filesDir, "home/.openclaw/agents/main/agent/auth-profiles.json"),
+            File(filesDir, "home/.openclaw/auth-profiles.json"),
+        )
+        return candidates.any { file ->
+            runCatching {
+                if (!file.isFile) return@runCatching false
+                val json = org.json.JSONObject(file.readText())
+                val profiles = json.optJSONObject("profiles") ?: return@runCatching false
+                val ids = profiles.keys()
+                while (ids.hasNext()) {
+                    val id = ids.next()
+                    if (id.startsWith("openai-codex:") || id.startsWith("openai:")) {
+                        val profile = profiles.optJSONObject(id)
+                        if (profile?.optString("type") == "oauth") return@runCatching true
+                    }
+                }
+                false
+            }.getOrDefault(false)
+        }
+    }
+
+    /** OpenClaw owns OAuth and refresh; the native adapter gives its CLI a real terminal. */
+    fun startCodexOAuthLogin(deviceCode: Boolean = true): Process {
+        val cli = resolveOpenclawEntryPoint()
+        require(cli.exists()) { "OpenClaw CLI missing" }
+        val env = buildEnv() + mapOf(
+            "OPENCLAW_CONFIG_PATH" to File(filesDir, "home/.openclaw/config.json").absolutePath,
+            "HOME" to File(filesDir, "home").absolutePath,
+        )
+        val command = listOf(
+            File(libDir, "libptylogin.so").absolutePath,
+            nodeBin, cli.absolutePath, "models", "auth", "login",
+            "--provider", "openai-codex",
+        ) + if (deviceCode) listOf("--method", "device-code") else emptyList()
+        return ProcessBuilder(command).apply {
+            environment().clear()
+            environment().putAll(env)
+            directory(filesDir)
+            redirectErrorStream(true)
+        }.start()
     }
 
     fun stopGateway() {
@@ -236,6 +370,7 @@ class NodeProcess @Inject constructor(
                 ?: org.json.JSONObject().also { cfg.put("models", it) }
             val providers = org.json.JSONObject()
             for (p in com.crsk.openclaw.data.providers.ProviderCatalog.all) {
+                if (p.subscription) continue
                 val key = keyStore.getProviderKey(p.id)
                 if (key.isBlank()) continue
                 providers.put(p.id, org.json.JSONObject().apply {
@@ -262,6 +397,24 @@ class NodeProcess @Inject constructor(
                     })
                 })
             }
+            val codex = com.crsk.openclaw.data.providers.ProviderCatalog.CODEX_SUBSCRIPTION
+            providers.put(codex.id, org.json.JSONObject().apply {
+                put("baseUrl", "https://chatgpt.com/backend-api")
+                put("api", "openai-codex-responses")
+                put("agentRuntime", org.json.JSONObject().put("id", "pi"))
+                put("models", org.json.JSONArray().apply {
+                    codex.models.forEach { model ->
+                        put(org.json.JSONObject().apply {
+                            put("id", model.id)
+                            put("name", model.displayName)
+                            put("reasoning", model.reasoning)
+                            put("input", org.json.JSONArray().put("text").put("image"))
+                            put("contextWindow", model.contextWindow)
+                            put("maxTokens", model.maxTokens)
+                        })
+                    }
+                })
+            })
             models.put("providers", providers)
             val agents = cfg.optJSONObject("agents")
                 ?: org.json.JSONObject().also { cfg.put("agents", it) }
@@ -300,6 +453,21 @@ class NodeProcess @Inject constructor(
             val modelId = provider.models.firstOrNull { it.id == selected }?.id
                 ?: provider.defaultModel.id
             modelCfg.put("primary", "${provider.id}/$modelId")
+
+            if (provider.subscription) {
+                // Native Codex harness is absent on Android. Explicit PI uses
+                // the existing openai-codex OAuth profile compatibility route.
+                val defaultsModels = defaults.optJSONObject("models")
+                    ?: org.json.JSONObject().also { defaults.put("models", it) }
+                // This is also OpenClaw's per-chat model allowlist.
+                // Register all choices so switching needs no gateway restart.
+                provider.models.forEach { model ->
+                    val ref = "${provider.id}/${model.id}"
+                    val entry = defaultsModels.optJSONObject(ref)
+                        ?: org.json.JSONObject().also { defaultsModels.put(ref, it) }
+                    entry.put("agentRuntime", org.json.JSONObject().put("id", "pi"))
+                }
+            }
             modelCfg.put("fallbacks", org.json.JSONArray())
 
             val serialised = cfg.toString(2)

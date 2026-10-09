@@ -1,5 +1,6 @@
 package com.crsk.openclaw.ui.settings
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
@@ -23,6 +24,7 @@ import com.crsk.openclaw.data.preferences.EncryptedKeyStore
 import com.crsk.openclaw.service.GatewayHealthMonitor
 import com.crsk.openclaw.service.GatewayService
 import com.crsk.openclaw.service.HealthState
+import com.crsk.openclaw.node.NodeProcess
 import com.crsk.openclaw.shizuku.ShizukuManager
 import com.crsk.openclaw.shizuku.ShizukuStatus
 import com.crsk.openclaw.termux.TermuxInstaller
@@ -46,10 +48,19 @@ data class KeyEditState(
     val isError: Boolean = false,
 )
 
+data class CodexAuthState(
+    val inProgress: Boolean = false,
+    val message: String = "Not signed in on this device",
+    val loginUrl: String? = null,
+    val deviceCode: String? = null,
+    val deviceMode: Boolean = false,
+)
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val preferences: AppPreferences,
+    private val nodeProcess: NodeProcess,
     private val keyValidator: ProviderKeyValidator,
     private val gatewayProcess: GatewayProcess,
     private val bootstrapManager: BootstrapManager,
@@ -64,6 +75,142 @@ class SettingsViewModel @Inject constructor(
     private val auditLog: AgentAuditLog,
 ) : ViewModel() {
 
+    val codexAuth = MutableStateFlow(CodexAuthState())
+    private var codexLoginProcess: Process? = null
+
+    fun checkCodexProfile() {
+        if (codexAuth.value.inProgress) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val found = nodeProcess.hasCodexAuthProfile()
+            codexAuth.value = CodexAuthState(
+                message = if (found) "Sign-in saved on this phone." else
+                    "Sign in to use your ChatGPT plan."
+            )
+        }
+    }
+
+    fun startCodexLogin(deviceCode: Boolean = true) {
+        if (codexAuth.value.inProgress) return
+        codexAuth.value = CodexAuthState(
+            inProgress = true,
+            message = if (deviceCode) "Requesting a one-time device code..." else "Starting browser OAuth...",
+            deviceMode = deviceCode,
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val process = nodeProcess.startCodexOAuthLogin(deviceCode)
+                codexLoginProcess = process
+                // Only expose an OpenAI authorization URL, never log the raw OAuth stdout.
+                var lastFailure: String? = null
+                var sawCliSuccess = false
+                // OpenClaw draws its code using a TTY. Do not wait for newline:
+                // terminal redraws and the final code row can be unterminated.
+                val capture = CodexDeviceCodeCapture()
+                process.inputStream.reader().use { input ->
+                    val chunk = CharArray(512)
+                    while (true) {
+                        val size = input.read(chunk)
+                        if (size < 0) break
+                        val line = String(chunk, 0, size)
+                        val authorization = capture.consume(line)
+                        // Terminal output may contain ANSI escapes, OAuth codes or
+                        // personal details. Classify known failures, never echo raw text.
+                        val diagnostic = when {
+                            line.contains("Unexpected token", ignoreCase = true) ||
+                                line.contains("is not valid JSON", ignoreCase = true) ->
+                                    "OpenAI sent a reply the app couldn't read."
+                            line.contains("fetch failed", ignoreCase = true) ||
+                                line.contains("ECONNRESET", ignoreCase = true) ->
+                                    "Connection interrupted. Please try signing in again."
+                            line.contains("invalid_grant", ignoreCase = true) ->
+                                    "This code was already used or expired. Request a new one."
+                            line.contains("token_expired", ignoreCase = true) ->
+                                    "Your sign-in expired. Please sign in again."
+                            line.contains("401") && line.contains("OAuth", ignoreCase = true) ->
+                                    "OpenAI rejected the sign-in. Please try again."
+                            line.contains("403") && line.contains("OAuth", ignoreCase = true) ->
+                                    "OpenAI couldn't authorize this account."
+                            line.contains("EACCES", ignoreCase = true) ||
+                                line.contains("permission denied", ignoreCase = true) ->
+                                    "The app couldn't save your sign-in."
+                            line.contains("No provider plugins", ignoreCase = true) ->
+                                    "Sign-in support is missing. Please update the app."
+                            line.contains("Unknown auth method", ignoreCase = true) ->
+                                    "This sign-in method needs an app update."
+                            line.contains("TTY", ignoreCase = true) && line.contains("requires", ignoreCase = true) ->
+                                    "The sign-in screen couldn't start. Please update the app."
+                            line.contains("Error:", ignoreCase = true) ->
+                                    if (lastFailure == null) "Sign-in didn't finish. Please try again." else null
+                            else -> null
+                        }
+                        if (diagnostic != null) {
+                            lastFailure = diagnostic
+                        }
+                        if (line.contains("OpenAI OAuth complete", ignoreCase = true)) {
+                            sawCliSuccess = true
+                        }
+                        // PTY can inject terminal formatting around verification codes.
+                        // Do not persist or log one-time codes; UI state only.
+                        val userCode = authorization.code
+                        if (deviceCode && userCode != null) {
+                            codexAuth.value = codexAuth.value.copy(
+                                message = "Enter this code on the OpenAI verification page.",
+                                deviceCode = userCode,
+                                deviceMode = true,
+                            )
+                        }
+                        val candidate = authorization.url
+                        if (candidate != null && runCatching {
+                            android.net.Uri.parse(candidate).host == "auth.openai.com"
+                        }.getOrDefault(false)) {
+                            codexAuth.value = codexAuth.value.copy(
+                                message = if (deviceCode) "Open the verification page and enter the one-time code."
+                                          else "Finish the browser login; paste redirect if prompted.",
+                                loginUrl = candidate,
+                                deviceMode = deviceCode,
+                            )
+                        } else if (!deviceCode && line.contains("paste", ignoreCase = true)) {
+                            codexAuth.value = codexAuth.value.copy(message = "Paste the redirected URL below.")
+                        }
+                    }
+                }
+                val exitCode = process.waitFor()
+                if (exitCode == 0) {
+                    codexAuth.value = CodexAuthState(message = "Signed in. Starting your agent…")
+                    runCatching { gatewayProcess.restart() }
+                } else {
+                    val credentialSaved = nodeProcess.hasCodexAuthProfile()
+                    val savedHint = if (credentialSaved) " A previous sign-in is still saved." else ""
+                    val cliHint = if (sawCliSuccess) " CLI reported completion." else ""
+                    codexAuth.value = CodexAuthState(
+                        message = "Login failed (exit " + exitCode + "). " +
+                            (lastFailure ?: "Please try signing in again.") + savedHint + cliHint
+                    )
+                }
+            } catch (_: Exception) {
+                codexAuth.value = CodexAuthState(message = "Couldn't start sign-in. Please try again.")
+            } finally {
+                codexLoginProcess = null
+            }
+        }
+    }
+
+    fun submitCodexRedirect(redirect: String) {
+        if (redirect.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val process = codexLoginProcess ?: return@launch
+                process.outputStream.apply {
+                    write((redirect.trim() + "\n").toByteArray(Charsets.UTF_8))
+                    flush()
+                }
+                codexAuth.value = codexAuth.value.copy(message = "Sent. Finishing sign-in…")
+            } catch (_: Exception) {
+                codexAuth.value = codexAuth.value.copy(message = "Couldn't finish sign-in. Please try again.")
+            }
+        }
+    }
+
     // ── Privacy section ─────────────────────────────────────────────────────────
     private val _privacyMessage = MutableStateFlow<String?>(null)
     val privacyMessage: StateFlow<String?> = _privacyMessage.asStateFlow()
@@ -74,10 +221,6 @@ class SettingsViewModel @Inject constructor(
 
     fun openTerms(context: Context) {
         openUrl(context, "https://4ais.in/terms")
-    }
-
-    fun openContact(context: Context) {
-        openUrl(context, "https://4ais.in/contact")
     }
 
     private fun openUrl(context: Context, url: String) {
@@ -110,22 +253,15 @@ class SettingsViewModel @Inject constructor(
      *  home directory, and consent. Re-enters the setup wizard on next launch.
      *  DPDP §13 / GDPR Art. 17 erasure for local data. */
     fun resetAppData() {
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { encryptedKeyStore.clearAll() }
-            runCatching { appDocs.clearAll() }
-            runCatching { auditLog.clear() }
-            runCatching { consentStore.withdrawAll() }
-            runCatching { preferences.resetLifetimeTokens() }
-            runCatching {
-                java.io.File(appContext.filesDir, "home/.openclaw").deleteRecursively()
-            }
-            runCatching {
-                preferences.setSetupComplete(false)
-                preferences.setBootstrapComplete(false)
-            }
-            withContext(Dispatchers.Main) {
-                _privacyMessage.value = "App data reset. Restart the app to re-enter setup."
-            }
+        // Ask Android to erase this app's whole sandbox and stop its processes.
+        // This also covers OAuth profiles, diagnostics, backups and future files;
+        // a running login or gateway cannot recreate credentials during the reset.
+        // Called only after the existing destructive-action confirmation.
+        val accepted = runCatching {
+            appContext.getSystemService(ActivityManager::class.java).clearApplicationUserData()
+        }.getOrDefault(false)
+        if (!accepted) {
+            _privacyMessage.value = "Couldn't reset app data. Please try again."
         }
     }
 

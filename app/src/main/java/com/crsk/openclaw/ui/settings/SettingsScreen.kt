@@ -91,6 +91,11 @@ fun SettingsScreen(
     val selectedProvider by viewModel.selectedProvider.collectAsStateWithLifecycle()
     val selectedModel by viewModel.selectedModel.collectAsStateWithLifecycle()
     val keyEdit by viewModel.keyEdit.collectAsStateWithLifecycle()
+    val codexAuth by viewModel.codexAuth.collectAsStateWithLifecycle()
+    var codexRedirect by remember { mutableStateOf("") }
+    LaunchedEffect(selectedProvider.id) {
+        if (selectedProvider.subscription) viewModel.checkCodexProfile()
+    }
     val gatewayStatus by viewModel.gatewayStatus.collectAsStateWithLifecycle()
     val autoStart by viewModel.autoStartOnBoot.collectAsStateWithLifecycle()
     val autoApprove by viewModel.autoApproveAgentActions.collectAsStateWithLifecycle()
@@ -475,85 +480,158 @@ fun SettingsScreen(
             }
 
             Spacer(Modifier.height(24.dp))
-            SectionHeader("API key")
-            GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 22.dp) {
-                Column {
-                    OutlinedTextField(
-                        value = keyEdit.draft,
-                        onValueChange = viewModel::keyDraftChanged,
-                        label = { Text(selectedProvider.keyLabel, color = TextSecondary) },
-                        placeholder = { Text(selectedProvider.keyHint, color = TextMuted) },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        trailingIcon = {
-                            IconButton(onClick = { showKey = !showKey }) {
-                                Icon(
-                                    imageVector = if (showKey) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                    contentDescription = "Toggle visibility",
-                                    tint = TextSecondary,
-                                )
-                            }
-                        },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Cyan,
-                            unfocusedBorderColor = Color.White.copy(alpha = 0.10f),
-                            cursorColor = Cyan,
-                            focusedContainerColor = SurfaceGlass,
-                            unfocusedContainerColor = SurfaceGlass,
-                        ),
-                    )
-                    keyEdit.message?.let { msg ->
-                        Spacer(Modifier.height(6.dp))
+            if (selectedProvider.subscription) {
+                SectionHeader("ChatGPT sign-in")
+                GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 22.dp) {
+                    Column {
                         Text(
-                            text = msg,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (keyEdit.isError) Danger else Success,
+                            "Use your ChatGPT plan. No API key needed.",
+                            style = MaterialTheme.typography.bodySmall, color = TextSecondary,
                         )
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    PrimaryButton(
-                        text = if (keyEdit.isValidating) "Checking…" else "Save key",
-                        onClick = viewModel::saveKey,
-                        enabled = !keyEdit.isValidating && keyEdit.draft.isNotBlank() && keyEdit.draft != savedKey,
-                    )
-                    if (keyEdit.isValidating) {
-                        Spacer(Modifier.height(10.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(
-                                strokeWidth = 2.dp,
-                                modifier = Modifier.size(16.dp),
-                                color = Cyan,
+                        Spacer(Modifier.height(12.dp))
+                        PrimaryButton(
+                            text = if (codexAuth.inProgress) "Waiting for you…" else "Sign in to ChatGPT",
+                            onClick = { viewModel.startCodexLogin(true) },
+                            enabled = !codexAuth.inProgress,
+                        )
+                        if (!codexAuth.inProgress) {
+                            TextButton(onClick = { viewModel.startCodexLogin(false) }) {
+                                Text("Try browser sign-in")
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(codexAuth.message, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        if (!codexAuth.inProgress) {
+                            TextButton(onClick = viewModel::checkCodexProfile) {
+                                Text("Check sign-in")
+                            }
+                        }
+                        codexAuth.deviceCode?.let { code ->
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = code,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("One-time code") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
                             )
-                            Spacer(Modifier.width(10.dp))
-                            Text(
-                                text = "Validating key…",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextSecondary,
+                            TextButton(onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager
+                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Codex device code", code))
+                            }) {
+                                Text("Copy code")
+                            }
+                        }
+                        // Never send the user to a code entry page before
+                        // the app actually captured and displayed their code.
+                        codexAuth.loginUrl?.takeIf { !codexAuth.deviceMode || codexAuth.deviceCode != null }?.let { url ->
+                            TextButton(onClick = { openDeviceVerification(context, url) }) {
+                                Text("Open sign-in page")
+                            }
+                        }
+                        if (codexAuth.inProgress && !codexAuth.deviceMode) {
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = codexRedirect,
+                                onValueChange = { codexRedirect = it },
+                                label = { Text("Paste the browser link") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            PrimaryButton(
+                                text = "Finish sign-in",
+                                onClick = {
+                                    viewModel.submitCodexRedirect(codexRedirect)
+                                    codexRedirect = ""
+                                },
+                                enabled = codexRedirect.isNotBlank(),
                             )
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier
-                            .clickable { openConsole(context, selectedProvider.consoleUrl) }
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.OpenInBrowser,
-                            contentDescription = null,
-                            tint = Cyan,
-                            modifier = Modifier.size(18.dp),
+                }
+            } else {
+                SectionHeader("API key")
+                GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 22.dp) {
+                    Column {
+                        OutlinedTextField(
+                            value = keyEdit.draft,
+                            onValueChange = viewModel::keyDraftChanged,
+                            label = { Text(selectedProvider.keyLabel, color = TextSecondary) },
+                            placeholder = { Text(selectedProvider.keyHint, color = TextMuted) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp),
+                            visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            trailingIcon = {
+                                IconButton(onClick = { showKey = !showKey }) {
+                                    Icon(
+                                        imageVector = if (showKey) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        contentDescription = "Toggle visibility",
+                                        tint = TextSecondary,
+                                    )
+                                }
+                            },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Cyan,
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.10f),
+                                cursorColor = Cyan,
+                                focusedContainerColor = SurfaceGlass,
+                                unfocusedContainerColor = SurfaceGlass,
+                            ),
                         )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "Get a ${selectedProvider.displayName} key",
-                            color = Cyan,
-                            style = MaterialTheme.typography.bodySmall,
+                        keyEdit.message?.let { msg ->
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = msg,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (keyEdit.isError) Danger else Success,
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        PrimaryButton(
+                            text = if (keyEdit.isValidating) "Checking…" else "Save key",
+                            onClick = viewModel::saveKey,
+                            enabled = !keyEdit.isValidating && keyEdit.draft.isNotBlank() && keyEdit.draft != savedKey,
                         )
+                        if (keyEdit.isValidating) {
+                            Spacer(Modifier.height(10.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(16.dp),
+                                    color = Cyan,
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    text = "Validating key…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .clickable { openConsole(context, selectedProvider.consoleUrl) }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.OpenInBrowser,
+                                contentDescription = null,
+                                tint = Cyan,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "Get a ${selectedProvider.displayName} key",
+                                color = Cyan,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                     }
                 }
             }
@@ -641,9 +719,9 @@ fun SettingsScreen(
                     )
                     HorizontalDivider(color = BorderHairline, thickness = 1.dp)
                     PrivacyRow(
-                        title = "Contact & grievance",
-                        subtitle = "legal@4ais.in · grievance@4ais.in",
-                        onClick = { viewModel.openContact(context) },
+                        title = "Community fork",
+                        subtitle = "Source code, updates and bug reports",
+                        onClick = { openConsole(context, "https://github.com/Undreamed/4ais-android") },
                     )
                     HorizontalDivider(color = BorderHairline, thickness = 1.dp)
                     PrivacyRow(
@@ -672,7 +750,7 @@ fun SettingsScreen(
                     HorizontalDivider(color = BorderHairline, thickness = 1.dp)
                     PrivacyRow(
                         title = "Reset all app data",
-                        subtitle = "Deletes API key, settings, agent notes, audit log. Re-enters setup.",
+                        subtitle = "Deletes sign-ins, keys, chats, settings and agent notes",
                         actionLabel = "Reset…",
                         destructive = true,
                         onClick = { showResetConfirm = true },
@@ -737,9 +815,9 @@ fun SettingsScreen(
                     title = { Text("Reset all app data?") },
                     text = {
                         Text(
-                            "This permanently deletes your API key, all settings, the agent's app-knowledge " +
-                                "notes, the on-device audit log, and any saved consent. The app will return to " +
-                                "the setup wizard on next launch. This cannot be undone.",
+                            "This permanently deletes all local data, including your ChatGPT sign-in, API keys, " +
+                                "chats, settings and agent notes. The app will close. Open it again to start fresh. " +
+                                "This cannot be undone.",
                         )
                     },
                     confirmButton = {
@@ -774,7 +852,14 @@ fun SettingsScreen(
     }
 }
 
-private fun openConsole(context: Context, url: String) {
+private fun openDeviceVerification(context: Context, url: String) {
+    val intent = Intent(Intent.ACTION_VIEW, url.toUri()).apply {
+        addCategory(Intent.CATEGORY_BROWSABLE)
+    }
+    context.startActivity(intent)
+}
+
+fun openConsole(context: Context, url: String) {
     CustomTabsIntent.Builder().build().launchUrl(context, url.toUri())
 }
 

@@ -1,5 +1,9 @@
 # Contributing to OpenClaw Android (4AIs)
 
+This community fork lives at [Undreamed/4ais-android](https://github.com/Undreamed/4ais-android).
+See [Building & testing](docs/BUILDING.md) for the native sign-in helper step.
+Report fork-specific bugs here; credit and link the original project when sharing changes upstream.
+
 Thanks for your interest! This project turns an Android phone into a fully
 autonomous AI agent — it sees the screen, taps, types, and gets things done,
 with the OpenClaw gateway running **on the phone itself**. Contributions of all

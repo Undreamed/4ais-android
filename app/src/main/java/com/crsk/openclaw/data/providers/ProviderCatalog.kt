@@ -45,11 +45,39 @@ data class AiProvider(
     val freeTier: Boolean,
     val authStyle: KeyAuthStyle = KeyAuthStyle.BEARER,
     val models: List<ProviderModel>,
+    val subscription: Boolean = false,
 ) {
     val defaultModel: ProviderModel get() = models.first()
 }
 
 object ProviderCatalog {
+    // Never configure this as a custom OpenAI completions API-key provider.
+    // OpenClaw owns both this provider and its OAuth credentials.
+    val CODEX_SUBSCRIPTION = AiProvider(
+        id = "openai-codex",
+        displayName = "ChatGPT",
+        baseUrl = "",
+        keyLabel = "",
+        keyHint = "",
+        keyPattern = Regex("^$"),
+        consoleUrl = "",
+        freeTier = false,
+        subscription = true,
+        models = listOf(
+            ProviderModel(
+                id = "gpt-5.5",
+                displayName = "GPT-5.5",
+                tagline = "Existing ChatGPT/Codex subscription",
+                contextWindow = 272_000,
+                maxTokens = 64_000,
+                reasoning = true,
+            ),
+            ProviderModel("gpt-6.1-sol", "GPT-6.1 Sol", "ChatGPT/Codex subscription", 272_000, 64_000, true),
+            ProviderModel("gpt-6-astra", "GPT-6 Astra", "ChatGPT/Codex subscription", 272_000, 64_000, true),
+            ProviderModel("gpt-6-sol", "GPT-6 Sol", "ChatGPT/Codex subscription", 272_000, 64_000, true),
+            ProviderModel("gpt-6-luna", "GPT-6 Luna", "ChatGPT/Codex subscription", 272_000, 64_000, true),
+        ),
+    )
 
     val NVIDIA = AiProvider(
         id = "nim",
@@ -167,7 +195,7 @@ object ProviderCatalog {
         ),
     )
 
-    val all: List<AiProvider> = listOf(NVIDIA, OPENAI, ANTHROPIC, GEMINI)
+    val all: List<AiProvider> = listOf(NVIDIA, OPENAI, ANTHROPIC, GEMINI, CODEX_SUBSCRIPTION)
 
     /** NVIDIA is the hero path: free keys, no card required. */
     val default: AiProvider = NVIDIA

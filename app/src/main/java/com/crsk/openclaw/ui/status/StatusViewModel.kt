@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -51,14 +52,27 @@ class StatusViewModel @Inject constructor(
     shizukuManager: ShizukuManager,
     preferences: AppPreferences,
     private val composio: ComposioRepository,
+    private val nodeProcess: com.crsk.openclaw.node.NodeProcess,
 ) : ViewModel() {
+
+    // Read-only local credential presence. Refresh on opening Status;
+    // never show credentials or OAuth secrets in diagnostic output.
+    private val codexProfilePresent = MutableStateFlow(nodeProcess.hasCodexAuthProfile())
+    val codexSelected = preferences.apiProvider
+        .map { it == "openai-codex" }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    private val modelConfigured = combine(
+        preferences.apiProvider, preferences.selectedProviderHasKey, codexProfilePresent
+    ) { provider, hasKey, hasProfile ->
+        if (provider == "openai-codex") hasProfile else hasKey
+    }
 
     val connections: StateFlow<ConnectionsUi> = combine(
         gatewayProcess.status,
         gatewayProcess.mcpReady,
         accessibilityHolder.status,
         shizukuManager.status,
-        preferences.selectedProviderHasKey,
+        modelConfigured,
     ) { gateway, mcpReady, a11y, shizuku, hasKey ->
         ConnectionsUi(
             gateway = gateway is GatewayStatus.Running,
@@ -128,6 +142,7 @@ class StatusViewModel @Inject constructor(
     /** Called by the screen ON_RESUME after the OAuth tab. Pulls fresh statuses + restarts
      *  the gateway if a new connection went ACTIVE. */
     fun onResumeFromOAuth() {
+        codexProfilePresent.value = nodeProcess.hasCodexAuthProfile()
         viewModelScope.launch {
             runCatching { composio.syncConnections() }
             val url = runCatching { composio.refreshMcpUrl() }.getOrNull()

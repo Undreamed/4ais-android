@@ -78,15 +78,15 @@ class NodeSetup @Inject constructor(
                 )
                 val proc = nodeProcess.runScript(setupScript, envExtras = env)
 
-                // Stream stdout lines as progress
+                // stderr is merged into stdout by NodeProcess.runScript.
                 val reader = proc.inputStream.bufferedReader()
-                val errReader = proc.errorStream.bufferedReader()
 
                 var ready = false
                 val stdoutLines = mutableListOf<String>()
 
                 reader.forEachLine { line ->
-                    stdoutLines.add(line)
+                    stdoutLines.add(line.take(240))
+                    if (stdoutLines.size > 30) stdoutLines.removeAt(0)
                     when {
                         line.contains("phase=npm")       -> step("npm",      line, 0.15f)
                         line.contains("phase=openclaw")  -> step("openclaw", line, 0.20f)
@@ -99,10 +99,14 @@ class NodeSetup @Inject constructor(
                 }
 
                 val exitCode = proc.waitFor()
-                val stderr = errReader.readText().takeLast(600)
 
                 if (exitCode != 0 || !ready) {
-                    val detail = if (stderr.isNotBlank()) stderr else stdoutLines.takeLast(5).joinToString("\n")
+                    val diag = if (exitCode == 139) {
+                        "SIGSEGV (139): Node or child npm process crashed. "
+                    } else ""
+                    val combinedTail = stdoutLines.takeLast(9).joinToString("\n").takeLast(1150)
+                    val detail = diag + "Last setup output:\n" +
+                        combinedTail.ifBlank { "(no process output; crash before first phase marker)" }
                     return@withContext Result.failure(
                         IllegalStateException("Setup failed (exit $exitCode):\n$detail")
                     )

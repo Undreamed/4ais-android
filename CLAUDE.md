@@ -44,7 +44,7 @@ Compose UI ─► WsRpcClient ──ws://127.0.0.1:3000──► OpenClaw Gatewa
   `EncryptedKeyStore`; `NodeProcess.refreshMcpConfig` rewrites
   `models.providers` + `defaults.model.primary` from keystore + prefs on every
   gateway start. config.json is a derived artifact — hand edits won't stick.
-- **Tool calls use the `act` command → UiRoutes on :3001.** openclaw 2026.5.12
+- **Tool calls use `sh $HOME/../bin/act …` → UiRoutes on :3001.** openclaw 2026.5.12
   dropped stdio MCP transport, so the agent's only built-in tool is `exec`.
   `NodeProcess.writeActWrapper` installs an `act` shell command into
   `filesDir/bin` (on PATH, rewritten every gateway start so APK updates
@@ -108,7 +108,8 @@ NodeSetup, ActWrapperScript) · `data/providers/` (ProviderCatalog) ·
 `overlay/` · `ui/` (chat, setup, settings, status, connections, heartbeat).
 
 ## Build & test
-- `./gradlew assembleDebug` — run `./scripts/fetch-node-libs.sh` once first;
+- `./gradlew assembleDebug` — run `./scripts/fetch-node-libs.sh` and the native
+  helper build from `docs/BUILDING.md` first;
   no API keys. arm64 devices only.
 - `./gradlew testDebugUnitTest lintDebug` — must pass before PRs.
 - Kotlin 2.1 + Compose (Material3), Hilt, DataStore, coroutines/Flow.
@@ -121,3 +122,13 @@ NodeSetup, ActWrapperScript) · `data/providers/` (ProviderCatalog) ·
 - Package name remains `com.crsk.openclaw`.
 - Never reintroduce server-side components or ship any credential in the repo
   or APK. The zero-backend, BYO-key model is a product decision.
+
+## Community fork
+
+This fork adds ChatGPT subscription sign-in through OpenClaw's native CLI,
+wrapped by `app/src/main/cpp/pty-login.c`. Keep `openai-codex` as the model
+namespace, explicitly register PI models and all model-switch choices.
+The pinned runtime workaround and safe error classifier are described in
+`docs/FORK.md`. Do not restore abandoned auth-namespace experiments or log
+OAuth output. Reset all app data delegates to Android's own complete reset
+after the user's confirmation; don't invoke it on a configured test phone.

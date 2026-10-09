@@ -53,6 +53,7 @@ data class ChatUiState(
 class ChatViewModel @Inject constructor(
     private val gatewayClient: GatewayClient,
     private val preferences: AppPreferences,
+    private val nodeProcess: com.crsk.openclaw.node.NodeProcess,
     private val gatewayProcess: GatewayProcess,
     private val healthMonitor: GatewayHealthMonitor,
     private val chatSession: ChatSession,
@@ -133,6 +134,9 @@ class ChatViewModel @Inject constructor(
 
     fun sendMessage(content: String) {
         if (content.isBlank() || _state.value.isGenerating) return
+        if (preferences.apiProvider.value == "openai-codex") {
+            nodeProcess.clearCodexHttpDiagnostic()
+        }
 
         if (!gatewayProcess.isRunning()) {
             _state.value = _state.value.copy(error = "Gateway not running. Start it from Settings.")
@@ -239,7 +243,7 @@ class ChatViewModel @Inject constructor(
                     }
                     is ChunkEvent.AgentError -> {
                         // Non-fatal — surface to the user but keep streaming.
-                        _state.value = _state.value.copy(error = event.text)
+                        _state.value = _state.value.copy(error = annotateProviderError(event.text))
                     }
                     is ChunkEvent.Done -> {
                         toolCallsByCallId.forEach { (id, tc) ->
@@ -341,8 +345,15 @@ class ChatViewModel @Inject constructor(
                 isStreaming = false,
             )),
             isGenerating = false,
-            error = errorText,
+            error = annotateProviderError(errorText),
         )
+    }
+
+    private fun annotateProviderError(message: String): String {
+        if (preferences.apiProvider.value != "openai-codex" ||
+            !message.contains("400 status code", ignoreCase = true)) return message
+        val hint = nodeProcess.readCodexHttpDiagnostic()
+        return if (hint.isBlank()) message else "$message\n$hint"
     }
 
     private fun applyHeartbeatChunk(chunk: com.crsk.openclaw.data.network.ws.HeartbeatChunk) {
@@ -453,5 +464,6 @@ fun selectProvider(
 ): Pair<String, String> {
     val provider = ProviderCatalog.byId(providerId) ?: ProviderCatalog.default
     val model = provider.models.firstOrNull { it.id == modelId } ?: provider.defaultModel
+    // Keep the OAuth provider namespace for the subscription transport.
     return provider.id to model.id
 }

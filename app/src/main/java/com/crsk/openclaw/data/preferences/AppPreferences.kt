@@ -80,7 +80,14 @@ class AppPreferences @Inject constructor(
 
     /** Bare model id (as sent to the provider API) for the selected provider. */
     val selectedModel: StateFlow<String> = context.dataStore.data
-        .map { it[selectedModelKey] ?: ProviderCatalog.default.defaultModel.id }
+        .map { prefs ->
+            val stored = prefs[selectedModelKey]
+            val provider = ProviderCatalog.byId(prefs[apiProviderKey] ?: ProviderCatalog.default.id)
+                ?: ProviderCatalog.default
+            if (provider.subscription) {
+                provider.models.firstOrNull { it.id == stored }?.id ?: provider.defaultModel.id
+            } else stored ?: ProviderCatalog.default.defaultModel.id
+        }
         .stateIn(prefsScope, SharingStarted.Eagerly, ProviderCatalog.default.defaultModel.id)
     val gatewayPort: StateFlow<Int> = context.dataStore.data
         .map { it[gatewayPortKey] ?: 3000 }

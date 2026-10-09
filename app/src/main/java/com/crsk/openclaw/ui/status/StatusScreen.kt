@@ -93,6 +93,7 @@ fun StatusScreen(
     viewModel: StatusViewModel = hiltViewModel(),
 ) {
     val connections by viewModel.connections.collectAsStateWithLifecycle()
+    val codexSelected by viewModel.codexSelected.collectAsStateWithLifecycle()
     val featuredToolkits by viewModel.featuredToolkits.collectAsStateWithLifecycle()
     val pendingRedirect by viewModel.pendingRedirect.collectAsStateWithLifecycle()
     val connectError by viewModel.connectError.collectAsStateWithLifecycle()
@@ -128,7 +129,12 @@ fun StatusScreen(
 
     val capabilities = listOf(
         Capability(CapabilityId.Gateway, "Gateway", Icons.Filled.Bolt, connections.gateway),
-        Capability(CapabilityId.Model, "AI model", Icons.Filled.AutoAwesome, connections.model),
+        Capability(
+            CapabilityId.Model,
+            if (codexSelected) "ChatGPT" else "AI model",
+            Icons.Filled.AutoAwesome,
+            connections.model
+        ),
         Capability(CapabilityId.UiAutomation, "UI control", Icons.Filled.TouchApp, connections.uiAutomation),
         Capability(CapabilityId.Shell, "Shell", Icons.Filled.Terminal, connections.shell),
         Capability(CapabilityId.Plugins, "Plugins", Icons.Filled.Extension, connections.plugins),
@@ -177,7 +183,7 @@ fun StatusScreen(
                     onBrowseAll = onOpenIntegrations,
                     onEnable = onEnable,
                 )
-                UsageCard()
+                UsageCard(codexSelected)
             }
         }
     }
@@ -372,7 +378,9 @@ private fun BrowseAllTile(onClick: () -> Unit) {
 
 @Composable
 private fun ConnectionBubble(cap: Capability, onEnable: (CapabilityId) -> Unit) {
-    val cta = CapabilityActions.ctaLabel(cap.id, cap.connected)
+    val cta = if (cap.id == CapabilityId.Model && cap.label == "ChatGPT" && !cap.connected)
+        "Sign in"
+    else CapabilityActions.ctaLabel(cap.id, cap.connected)
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -432,7 +440,9 @@ private fun ConnectionBubble(cap: Capability, onEnable: (CapabilityId) -> Unit) 
             color = if (cap.connected) MaterialTheme.colorScheme.onSurface else TextMuted,
         )
         Text(
-            text = if (cap.connected) "Connected" else (cta ?: "Off"),
+            text = if (cap.id == CapabilityId.Model && cap.label == "ChatGPT" && cap.connected)
+                "Login stored"
+            else if (cap.connected) "Connected" else (cta ?: "Off"),
             style = MaterialTheme.typography.labelSmall,
             color = if (cap.connected) Success else AccentBlue,
         )
@@ -440,7 +450,7 @@ private fun ConnectionBubble(cap: Capability, onEnable: (CapabilityId) -> Unit) 
 }
 
 @Composable
-private fun UsageCard() {
+private fun UsageCard(codexSelected: Boolean) {
     GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 22.dp, contentPadding = 20.dp) {
         Column {
             Text(
@@ -458,14 +468,17 @@ private fun UsageCard() {
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    text = "Unlimited",
+                    text = if (codexSelected) "Your ChatGPT plan" else "Your AI provider",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "Every chat runs on your own API key — no middleman, no message limit.",
+                text = if (codexSelected)
+                    "Your ChatGPT plan determines which models you can use and how much you can chat."
+                else
+                    "Usage and billing follow your provider’s plan.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextMuted,
             )

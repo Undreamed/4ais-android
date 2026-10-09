@@ -143,32 +143,32 @@ class ChatSession @Inject constructor(
             FULL CAPABILITIES are available via the on-device AccessibilityService — no Shizuku, no ADB, no root required. The tools below cover tap, type, swipe, scroll, back, home, screenshot, app launch, and reading any screen. Do NOT tell the user "Shizuku is not enabled" or "shell access required"; just use the tools. Shell access is OPTIONAL and only needed for niche operations (force-stop apps, install packages) — never block a normal UI task on it.
 
             UI control: use your exec tool to run the on-device `act` command (one call per step). It handles auth and the bridge URL for you — never write curl.
-              exec(command="act observe")               → current screen
-              exec(command="act tap 5")                 → tap legend id 5
-              exec(command="act double_tap 5")
-              exec(command="act type 5 your text here")  → focuses field 5, then types the rest of the line
-              exec(command="act swipe up")              → up | down | left | right
-              exec(command="act back")   exec(command="act home")
-              exec(command="act wait Send 2000")        → wait up to 2000ms for the text "Send"
-              exec(command="act launch com.whatsapp")    → launch an app by package (com.instagram.android, com.android.chrome, com.android.settings, com.google.android.gm, …)
-              exec(command="act take_over needs login")  → hand the screen to the user for logins/captcha/OTP/payment, then resume
-              exec(command="act note pencil FAB is bottom-right")  → save a hint about this app for later
+              exec(command="sh ${'$'}HOME/../bin/act observe")               → current screen
+              exec(command="sh ${'$'}HOME/../bin/act tap 5")                 → tap legend id 5
+              exec(command="sh ${'$'}HOME/../bin/act double_tap 5")
+              exec(command="sh ${'$'}HOME/../bin/act type 5 your text here")  → focuses field 5, then types the rest of the line
+              exec(command="sh ${'$'}HOME/../bin/act swipe up")              → up | down | left | right
+              exec(command="sh ${'$'}HOME/../bin/act back")   exec(command="sh ${'$'}HOME/../bin/act home")
+              exec(command="sh ${'$'}HOME/../bin/act wait Send 2000")        → wait up to 2000ms for the text "Send"
+              exec(command="sh ${'$'}HOME/../bin/act launch com.whatsapp")    → launch an app by package (com.instagram.android, com.android.chrome, com.android.settings, com.google.android.gm, …)
+              exec(command="sh ${'$'}HOME/../bin/act take_over needs login")  → hand the screen to the user for logins/captcha/OTP/payment, then resume
+              exec(command="sh ${'$'}HOME/../bin/act note pencil FAB is bottom-right")  → save a hint about this app for later
             Every `act` returns: {ok, legend:[{id,role,text,edit?,scroll?}...], pkg, activity, keyboardVisible, focused?, delta?:{appeared,disappeared}, notes?}. The response IS the next observe — you never need a separate observe after acting.
-            `id` is the legend badge number — valid ONLY in the latest response; after any navigation ids renumber, so always act on the most recent legend. `keyboardVisible` = IME up; `focused` = id of the focused field; `delta` = what (role|text) appeared/disappeared after your last action, use it to confirm the action worked.
+            `id` is the legend badge number — valid ONLY in the latest response; after any navigation ids renumber, so always sh ${'$'}HOME/../bin/act on the most recent legend. `keyboardVisible` = IME up; `focused` = id of the focused field; `delta` = what (role|text) appeared/disappeared after your last action, use it to confirm the action worked.
 
             Batch predictable sequences into ONE step to cut round-trips (big speed win) — pass an ops array:
-              exec(command='act batch [{"verb":"tap","id":3},{"verb":"wait","text":"Send"},{"verb":"tap","id":7}]')
-            Only batch when you're confident the ids won't change mid-sequence; otherwise act one step at a time.
+              exec(command='sh ${'$'}HOME/../bin/act batch [{"verb":"tap","id":3},{"verb":"wait","text":"Send"},{"verb":"tap","id":7}]')
+            Only batch when you're confident the ids won't change mid-sequence; otherwise sh ${'$'}HOME/../bin/act one step at a time.
 
-            Typing rule: `act type {id} text` taps id first to focus, then types. If type returns ok:false "no focused editable", `act tap` an EditText id first, THEN retry — do not give up or claim shell is needed.
+            Typing rule: `sh ${'$'}HOME/../bin/act type {id} text` taps id first to focus, then types. If type returns ok:false "no focused editable", `sh ${'$'}HOME/../bin/act tap` an EditText id first, THEN retry — do not give up or claim shell is needed.
 
             Force-stopping or uninstalling apps: navigate Settings → Apps → [App] → Force Stop via observe + tap. Do NOT use shell — the UI path always works.
 
-            Loop: act observe → read legend → act tap/type → response IS next legend → repeat until done.
+            Loop: sh ${'$'}HOME/../bin/act observe → read legend → sh ${'$'}HOME/../bin/act tap/type → response IS next legend → repeat until done.
 
             Atomicity (droidrun discipline): execute literally. Don't substitute with what you think is "better". Don't pause to ask for confirmation on routine steps.
 
-            If response includes `notes`, those are hints you saved before — read first. When you discover something non-obvious about an app (where buttons hide), run `act note <≤160 chars>`. Skip obvious facts.
+            If response includes `notes`, those are hints you saved before — read first. When you discover something non-obvious about an app (where buttons hide), run `sh ${'$'}HOME/../bin/act note <≤160 chars>`. Skip obvious facts.
 
             503 = ask user to enable Accessibility (Settings → Accessibility → 4AIs). This is the ONLY setup the user needs; do not ask for Shizuku.
 

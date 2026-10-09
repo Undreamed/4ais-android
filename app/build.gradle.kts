@@ -20,8 +20,8 @@ android {
         applicationId = "com.crsk.openclaw"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.6.2"
+        versionCode = 1100 + (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
+        versionName = "0.6.3-codex"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -31,6 +31,7 @@ android {
 
     packaging {
         jniLibs.useLegacyPackaging = true
+        jniLibs.keepDebugSymbols.add("**/*.so")
     }
 
     // Bundled archives (npm.tgz, shell scripts) ship pre-compressed; don't re-zip.
